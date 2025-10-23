@@ -1,0 +1,36 @@
+// Template Detection Rule
+// MITRE ATT&CK: [Tactic] - [Technique ID]
+// Severity: [High/Medium/Low]
+// Description: [Brief description of what this rule detects]
+
+let timeframe = 1h;
+let threshold = 5;
+
+// Main detection logic
+TableName
+| where TimeGenerated > ago(timeframe)
+| where [Condition]
+| summarize 
+    Count = count(),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+    by [GroupByField]
+| where Count >= threshold
+| extend 
+    Severity = case(
+        Count > 10, "High",
+        Count > 5, "Medium",
+        "Low"
+    )
+| project 
+    TimeGenerated = LastSeen,
+    Severity,
+    Count,
+    [GroupByField],
+    FirstSeen,
+    LastSeen
+// Entity mapping
+| extend 
+    AccountCustomEntity = [UserField],
+    IPCustomEntity = [IPField],
+    HostCustomEntity = [HostField]

@@ -1,0 +1,156 @@
+# Argus-Obsidian: Manual Step-by-Step Commands
+# Run these ONE AT A TIME in your terminal
+
+# ============================================================================
+# STEP 1: Fix Sentinel Extension
+# ============================================================================
+az extension add --name sentinel
+
+# ============================================================================
+# STEP 2: Get Your Current Subscription
+# ============================================================================
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+echo "Your subscription: $SUBSCRIPTION_ID"
+
+# ============================================================================
+# STEP 3: Get Workspace Credentials (workspace already exists)
+# ============================================================================
+WORKSPACE_ID=$(az monitor log-analytics workspace show \
+    --resource-group "rg-argus-obsidian" \
+    --workspace-name "law-argus-obsidian" \
+    --query "customerId" -o tsv)
+echo "Workspace ID: $WORKSPACE_ID"
+
+SHARED_KEY=$(az monitor log-analytics workspace get-shared-keys \
+    --resource-group "rg-argus-obsidian" \
+    --workspace-name "law-argus-obsidian" \
+    --query "primarySharedKey" -o tsv)
+echo "Shared Key: $SHARED_KEY"
+
+# ============================================================================
+# STEP 4: Create Storage Account
+# ============================================================================
+STORAGE_NAME="saargus$(date +%s | tail -c 5)"
+echo "Creating storage: $STORAGE_NAME"
+
+az storage account create \
+    --name "$STORAGE_NAME" \
+    --resource-group "rg-argus-obsidian" \
+    --location "eastus" \
+    --sku Standard_LRS
+
+# ============================================================================
+# STEP 5: Create .env File
+# ============================================================================
+cat > .env << EOF
+AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID
+WORKSPACE_ID=$WORKSPACE_ID
+SHARED_KEY=$SHARED_KEY
+RESOURCE_GROUP=rg-argus-obsidian
+LOCATION=eastus
+WORKSPACE_NAME=law-argus-obsidian
+STORAGE_ACCOUNT=$STORAGE_NAME
+EOF
+
+echo "Created .env file"
+
+# ============================================================================
+# STEP 6: Enable Sentinel (Try Portal If This Fails)
+# ============================================================================
+az sentinel onboarding create \
+    --name "default" \
+    --resource-group "rg-argus-obsidian" \
+    --workspace-name "law-argus-obsidian"
+
+# If above fails, enable Sentinel manually in Azure Portal:
+# 1. Go to https://portal.azure.com
+# 2. Search for "Microsoft Sentinel"
+# 3. Click "+ Create"
+# 4. Select your workspace "law-argus-obsidian"
+# 5. Click "Add"
+
+# ============================================================================
+# STEP 7: Create B9-Phish Function App
+# ============================================================================
+az functionapp create \
+    --resource-group "rg-argus-obsidian" \
+    --consumption-plan-location "eastus" \
+    --runtime python \
+    --runtime-version 3.9 \
+    --functions-version 4 \
+    --name "func-b9phish-connector" \
+    --storage-account "$STORAGE_NAME" \
+    --os-type Linux
+
+# ============================================================================
+# STEP 8: Configure B9-Phish Function
+# ============================================================================
+az functionapp config appsettings set \
+    --name "func-b9phish-connector" \
+    --resource-group "rg-argus-obsidian" \
+    --settings "WORKSPACE_ID=$WORKSPACE_ID" "SHARED_KEY=$SHARED_KEY"
+
+# ============================================================================
+# STEP 9: Create RavenWatch Function App
+# ============================================================================
+az functionapp create \
+    --resource-group "rg-argus-obsidian" \
+    --consumption-plan-location "eastus" \
+    --runtime python \
+    --runtime-version 3.9 \
+    --functions-version 4 \
+    --name "func-ravenwatch-connector" \
+    --storage-account "$STORAGE_NAME" \
+    --os-type Linux
+
+# ============================================================================
+# STEP 10: Configure RavenWatch Function
+# ============================================================================
+az functionapp config appsettings set \
+    --name "func-ravenwatch-connector" \
+    --resource-group "rg-argus-obsidian" \
+    --settings "WORKSPACE_ID=$WORKSPACE_ID" "SHARED_KEY=$SHARED_KEY"
+
+# ============================================================================
+# STEP 11: Create Arkkeeper Function App
+# ============================================================================
+az functionapp create \
+    --resource-group "rg-argus-obsidian" \
+    --consumption-plan-location "eastus" \
+    --runtime python \
+    --runtime-version 3.9 \
+    --functions-version 4 \
+    --name "func-arkkeeper-connector" \
+    --storage-account "$STORAGE_NAME" \
+    --os-type Linux
+
+# ============================================================================
+# STEP 12: Configure Arkkeeper Function
+# ============================================================================
+az functionapp config appsettings set \
+    --name "func-arkkeeper-connector" \
+    --resource-group "rg-argus-obsidian" \
+    --settings "WORKSPACE_ID=$WORKSPACE_ID" "SHARED_KEY=$SHARED_KEY"
+
+# ============================================================================
+# STEP 13: Verify Everything
+# ============================================================================
+echo "Listing all resources:"
+az resource list --resource-group "rg-argus-obsidian" --output table
+
+# ============================================================================
+# STEP 14: Get Function URLs
+# ============================================================================
+echo "B9-Phish URL:"
+az functionapp show --name "func-b9phish-connector" --resource-group "rg-argus-obsidian" --query "defaultHostName" -o tsv
+
+echo "RavenWatch URL:"
+az functionapp show --name "func-ravenwatch-connector" --resource-group "rg-argus-obsidian" --query "defaultHostName" -o tsv
+
+echo "Arkkeeper URL:"
+az functionapp show --name "func-arkkeeper-connector" --resource-group "rg-argus-obsidian" --query "defaultHostName" -o tsv
+
+# ============================================================================
+# DONE! Your infrastructure is ready
+# ============================================================================
+# Next: Deploy your Python code to the functions

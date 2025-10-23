@@ -1,26 +1,56 @@
-# Azure credentials
-*.publishsettings
-*.azurePubxml
+# Azure credentials and secrets
+*.env
+.env.local
+config/secrets.json
+*_keys.json
+*.pfx
+*.cer
 
-# Local configuration
-.env
-config/local.json
-*.local.json
-
-# Secrets and keys
-**/*secrets*.json
-**/*key*.json
-**/appsettings.Development.json
-
-# MacOS
-.DS_Store
+# Azure Function artifacts
+bin/
+obj/
+.python_packages/
+.venv/
+local.settings.json
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+.DS_Store
 
 # Python
 __pycache__/
-*.pyc
-.pytest_cache/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
 venv/
+
+# Logs and temporary files
+*.log
+logs/
+temp/
+*.tmp
+
+# Test outputs
+test-results/
+coverage/
+*.coverage
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+
+# Node (for Logic Apps testing)
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Custom
+/data/production/
+/backups/

@@ -1,0 +1,172 @@
+// =============================================================================
+// Detection Rule: Suspicious Phishing Email Detection
+// =============================================================================
+// MITRE ATT&CK: T1566.001 (Spearphishing Attachment) & T1566.002 (Spearphishing Link)
+// Severity: High
+// Author: Argus-Obsidian
+// Version: 1.0
+// Last Modified: 2025-10-22
+//
+// Description:
+// Detects high-confidence phishing emails from B9-Phish integration with multiple
+// malicious indicators including authentication failures, suspicious domains, and
+// known phishing patterns. Correlates with threat intelligence for enhanced detection.
+//
+// Business Impact:
+// Phishing remains the #1 initial access vector for ransomware and data breaches.
+// This rule prevents credential theft and malware delivery via email.
+//
+// False Positive Sources:
+// - Legitimate marketing emails with tracking links
+// - Security awareness training phishing simulations
+// - Misconfigured email authentication (SPF/DMARC) on legitimate senders
+// =============================================================================
+
+let timeframe = 1h;
+let confidence_threshold = 0.85;
+let lookback_period = 7d;
+
+// Step 1: Get recent phishing detections from B9-Phish
+let phishing_detections = 
+    B9Phish_Email_Detections_CL
+    | where TimeGenerated > ago(timeframe)
+    | where DetectionConfidence_d >= confidence_threshold
+    | where DetectionType_s in (
+        "credential_harvesting", 
+        "malware_delivery", 
+        "business_email_compromise",
+        "qr_code_phishing"
+    )
+    | extend 
+        SenderDomain = tostring(extract(@"@(.+)$", 1, SenderEmail_s)),
+        RecipientDomain = tostring(extract(@"@(.+)$", 1, RecipientEmail_s)),
+        AuthenticationStatus = case(
+            SPF_Result_s == "pass" and DMARC_Result_s == "pass", "Authenticated",
+            SPF_Result_s == "fail" and DMARC_Result_s == "fail", "Both_Failed",
+            SPF_Result_s == "fail", "SPF_Failed",
+            DMARC_Result_s == "fail", "DMARC_Failed",
+            "Unknown"
+        );
+
+// Step 2: Identify trusted domain spoofing attempts
+let spoofed_domains = dynamic([
+    "microsoft.com", "google.com", "amazon.com", "apple.com",
+    "paypal.com", "netflix.com", "facebook.com", "linkedin.com"
+]);
+
+let spoofing_attempts =
+    phishing_detections
+    | where SenderDomain has_any (spoofed_domains) and AuthenticationStatus != "Authenticated"
+    | extend ThreatCategory = "Domain_Spoofing";
+
+// Step 3: Check for credential harvesting patterns
+let credential_theft =
+    phishing_detections
+    | where DetectionType_s == "credential_harvesting"
+    | where MaliciousURLs_s != ""
+    | extend 
+        URLCount = array_length(parse_json(MaliciousURLs_s)),
+        ThreatCategory = "Credential_Theft"
+    | where URLCount > 0;
+
+// Step 4: Identify QR code phishing (emerging threat)
+let qr_phishing =
+    phishing_detections
+    | where DetectionType_s == "qr_code_phishing"
+    | extend ThreatCategory = "QR_Code_Phishing";
+
+// Step 5: Correlate with threat intelligence
+let threat_intel_correlation =
+    phishing_detections
+    | join kind=leftouter (
+        RavenWatch_ThreatIntel_CL
+        | where TimeGenerated > ago(lookback_period)
+        | where IndicatorType_s in ("domain", "url", "email")
+        | where Confidence_d > 70
+        | project ThreatIndicator = Indicator_s, ThreatType_s, ThreatSource_s, ThreatIntelConfidence = Confidence_d
+    ) on $left.SenderDomain == $right.ThreatIndicator
+    | extend EnrichedWithThreatIntel = iff(isnotempty(ThreatIndicator), true, false);
+
+// Step 6: Check for mass phishing campaigns
+let campaign_detection =
+    phishing_detections
+    | summarize 
+        RecipientCount = dcount(RecipientEmail_s),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        Subjects = make_set(Subject_s, 10),
+        DetectionTypes = make_set(DetectionType_s)
+        by SenderEmail_s, SenderDomain
+    | where RecipientCount > 10  // Targeting multiple users
+    | extend ThreatCategory = "Phishing_Campaign";
+
+// Step 7: Combine all detection methods
+union isfuzzy=true
+    spoofing_attempts,
+    credential_theft,
+    qr_phishing,
+    (threat_intel_correlation | where EnrichedWithThreatIntel == true | extend ThreatCategory = "ThreatIntel_Match"),
+    (campaign_detection | extend TimeGenerated = LastSeen)
+| distinct *
+| extend
+    // Risk scoring based on multiple factors
+    RiskScore = case(
+        ThreatCategory == "Domain_Spoofing" and DetectionConfidence_d > 0.9, 100,
+        ThreatCategory == "Phishing_Campaign" and RecipientCount > 50, 95,
+        ThreatCategory == "Credential_Theft" and URLCount > 3, 90,
+        ThreatCategory == "QR_Code_Phishing", 85,
+        ThreatCategory == "ThreatIntel_Match" and ThreatIntelConfidence > 90, 95,
+        DetectionConfidence_d > 0.95, 85,
+        75  // Base score for high-confidence detections
+    ),
+    // Recommended actions
+    RecommendedAction = case(
+        ThreatCategory == "Phishing_Campaign", "Immediate: Block sender domain, purge all emails",
+        ThreatCategory == "Domain_Spoofing", "High: Delete email, block sender, notify users",
+        ThreatCategory == "Credential_Theft", "High: Delete email, force password reset for recipients",
+        ThreatCategory == "QR_Code_Phishing", "Medium: Quarantine email, user awareness alert",
+        "Medium: Quarantine email for review"
+    ),
+    // Compliance mapping
+    ComplianceFramework = "PCI-DSS 8.2.3, NIST 800-53 SI-8, CIS Control 9.3"
+| project
+    TimeGenerated,
+    SenderEmail = SenderEmail_s,
+    RecipientEmail = iff(ThreatCategory == "Phishing_Campaign", "Multiple", RecipientEmail_s),
+    Subject = Subject_s,
+    ThreatCategory,
+    DetectionType = DetectionType_s,
+    DetectionConfidence = round(DetectionConfidence_d, 2),
+    RiskScore,
+    AuthenticationStatus,
+    MaliciousURLs = MaliciousURLs_s,
+    AttachmentHash = AttachmentHash_s,
+    RecommendedAction,
+    ComplianceFramework,
+    // Entity mappings for Sentinel
+    AccountCustomEntity = RecipientEmail_s,
+    MailboxCustomEntity = RecipientEmail_s,
+    URLCustomEntity = MaliciousURLs_s,
+    FileHashCustomEntity = AttachmentHash_s,
+    MailMessageCustomEntity = strcat(SenderEmail_s, ";", Subject_s)
+| order by RiskScore desc, TimeGenerated desc
+| take 100  // Limit results to prevent performance issues
+
+// =============================================================================
+// Rule Configuration for Sentinel Analytics Rule
+// =============================================================================
+// Frequency: Run every 15 minutes
+// Lookback: 1 hour
+// Threshold: Generate incident on 1 or more results
+// Severity: Set dynamically based on RiskScore (>90 = High, >75 = Medium, else Low)
+// Suppression: Suppress for same SenderEmail + Subject for 4 hours
+// 
+// Incident Settings:
+// - Enable alert grouping by SenderEmail
+// - Group related alerts within 1 hour
+// - Reopen closed incidents if triggered again within 24 hours
+//
+// Automated Response:
+// - Trigger playbook: "Phishing-Response-Orchestration"
+// - Send to Microsoft 365 Defender for additional analysis
+// =============================================================================
