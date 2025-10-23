@@ -1,0 +1,26 @@
+# Azure credentials
+*.publishsettings
+*.azurePubxml
+
+# Local configuration
+.env
+config/local.json
+*.local.json
+
+# Secrets and keys
+**/*secrets*.json
+**/*key*.json
+**/appsettings.Development.json
+
+# MacOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
